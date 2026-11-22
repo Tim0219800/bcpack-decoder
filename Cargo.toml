@@ -1,0 +1,23 @@
+[package]
+name = "bcpack-decoder"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+license = "MIT"
+description = "Clean-room decoder for Xbox Series DirectStorage BCPack texture streams (BC1)"
+readme = "README.md"
+keywords = ["bcpack", "rans", "bc1", "texture", "directstorage"]
+categories = ["compression", "multimedia::images"]
+
+[lib]
+name = "bcpack_decoder"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bcpack-decoder"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3

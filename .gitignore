@@ -1,0 +1,12 @@
+# Build output
+/target/
+
+# Never commit data: chunks, blocks, learned tables
+*.bin
+*.bc1
+*.dds
+tables*.json
+/data/
+/samples/
+/corpus/
+/out/
