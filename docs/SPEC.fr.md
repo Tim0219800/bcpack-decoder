@@ -40,7 +40,7 @@ Octet `mode` :
 | bits | sens |
 |------|------|
 | 0-3  | `q`, indice du modèle (0..15) |
-| 4    | état présent ; toujours 1 dans les vraies données (un enregistrement avec le bit 4 à 0 est rejeté) |
+| 4    | vidage (« flush », voir plus bas) ; à 1 dans tous les enregistrements observés |
 | 5    | longueur étendue : `len_hi` suit |
 | 6-7  | `r`, réduction de largeur : la largeur des symboles de l'enregistrement est `w' = w - r`, où `w` est la largeur de base de la lane |
 
@@ -51,7 +51,19 @@ compris) :
 * forme étendue (bit 5 = 1) : `total = (len_lo | len_hi << 8) + 257`
   (257 à 65 792).
 
-Les `nst = min(4, total)` premiers octets sont l'état rANS initial,
+**Bit de vidage.** Bit 4 à 1 : l'enregistrement se termine avec l'état revenu
+à `L`, et l'enregistrement suivant de la lane repart d'un état neuf (ses premiers
+octets sont un nouvel état initial). Bit 4 à 0 : l'enregistrement se termine dès
+que ses octets sont épuisés et que `x < L` (sans restauration de zéros), et
+l'enregistrement suivant **n'a pas d'octets d'état** : ses octets continuent de
+nourrir le même état, sous son propre `q` et sa propre largeur. C'est le
+comportement du bit `flush_per_frag` du décodeur d'exemple public de Microsoft
+`silicon-rans`. Aucun enregistrement non vidé n'a été trouvé dans les vrais
+chunks (tous formats) ; le décodeur les accepte, mais leur interaction avec la
+chronologie de l'ordonnanceur n'est pas confirmée par des données.
+
+Quand l'enregistrement part d'un état neuf (premier de la lane, ou précédent
+vidé), les `nst = min(4, total)` premiers octets sont l'état rANS initial,
 **gros-boutiste** : `x` est l'entier formé par ces `nst` octets, poids fort
 en premier. Les `total - nst` octets restants sont les données (le **budget**
 de la lane).
@@ -142,6 +154,11 @@ sont les tables entières, pas les lambdas, qui comptent. Exemple,
 `(q, w') = (12, 5)` : fréquences par symbole, paquet par paquet,
 `53290, 9957, 1104, 14, 1, 1` (FIN = 1 ; total 65 536). `q = 15` est saturée :
 tous les symboles sauf 0 ont la fréquence 1.
+
+**Recoupement.** Ces tables générées sont identiques, pour tout `q` et toute
+largeur de 1 à 8, aux tables `base_table` / `freq_table` de l'exemple public
+`silicon-rans` de Microsoft (licence MIT, `mdu_minirans.v`) ; le test
+`verilog_ref::tests` vérifie les 128 (voir `THIRD_PARTY_NOTICES.md`).
 
 Le test `model::tests::table_fingerprint` du crate fige une empreinte des
 16 × 8 tables : une plateforme dont `exp` ou `pow` différerait serait détectée.
@@ -271,12 +288,18 @@ entier, une partie d'un niveau, ou plusieurs petits niveaux.
 | format | état |
 |--------|------|
 | BC1 | **résolu** : la couche entropique et la sémantique des blocs reproduisent exactement les vrais chunks |
-| BC7 | non résolu. Même format d'enregistrement, mêmes tables, même plafond de 8 lectures ; 16 lanes, largeurs de base `4,4,8,8,8,8,8,7,7,5,6,8,8,8,8,8` (la dernière supposée), un symbole par lane et par 8 octets (deux par bloc BC7). Avec les règles d'ordonnancement de BC1, le décodage se désynchronise après quelques centaines de rondes, typiquement quand une lane redémarre après un court enregistrement `q = 0`. Sémantique non étudiée. |
-| BC5 | non résolu. Hypothèse : 12 lanes (`3,4,8,8` puis huit lanes de largeur 6). |
-| BC4, BC3, BC6H | non étudiés. |
+| BC7 | **couche entropique établie** : 16 lanes, largeurs de base `4,4,8,8,8,8,8,7,7,5,6,8,8,8,8,5` (la lane 15 fait 5 bits ; la lire sur 8 bits causait la désynchronisation observée auparavant), un symbole par lane et par 8 octets (deux par bloc BC7), mêmes enregistrements, tables et ordonnanceur que BC1. Tous les chunks BC7 du corpus se décodent exactement (environ 5 100). Sémantique des blocs non implémentée. |
+| BC6H | couche entropique établie : 16 lanes `4,4,8,8,8,5,5,5,6,6,6,8,8,8,8,5` ; tous les chunks exacts (environ 270). Sémantique non implémentée. |
+| BC5 | couche entropique établie : 12 lanes `4,4,8,8` puis huit de largeur 6, deux unités par bloc ; tous les chunks exacts (environ 320). |
+| BC4 | couche entropique établie : 12 lanes `8,8,8,8` puis huit de largeur 6, une unité par bloc ; tous les chunks exacts (environ 80). |
+| BC3 | couche entropique établie : 12 lanes `4,4,8,6,6,6,6,5,6,5,8,8`, deux unités par bloc ; tous les chunks exacts (environ 35). |
 
-La couche entropique du crate (`decode_lanes`, commande `lanes --widths`) est
-générique sur la disposition des lanes, pour faciliter la suite.
+La couche entropique (`decode_lanes`, `CodecParams::for_codec`, commande
+`lanes --codec`) couvre les six formats ; seul BC1 a un assembleur de blocs.
+Les dispositions de lanes de BC3, BC4, BC5, BC6H et BC7 (dont la lane 15 sur
+5 bits) ont d'abord été suggérées par des notes publiques de chercheurs
+indépendants, puis vérifiées sur les données avec le critère strict de la
+section 3.
 
 ## 8. Fichier de tables
 
@@ -315,7 +338,10 @@ utilisées : la documentation publique DirectStorage de Microsoft (BCPack est
 un codeur entropique rANS pour les données BCn, qui sépare endpoints et
 index), des discussions publiques de développeurs de compression (codage sans
 perte posé sur des blocs BCn), et des notes publiques de chercheurs
-indépendants (rANS octet par octet, probabilités sur 16 bits, `L = 2^24`).
+indépendants (rANS octet par octet, probabilités sur 16 bits, `L = 2^24` ;
+dispositions de lanes des formats autres que BC1), et le décodeur d'exemple
+`silicon-rans` de Microsoft (licence MIT), publié après l'ajustement des tables,
+qui a confirmé les tables, l'en-tête d'enregistrement et le bit de vidage.
 
 Étapes principales :
 

@@ -38,7 +38,7 @@ mode  len_lo  [len_hi]  state[0 .. min(4, total)]  payload ...
 | bits | meaning |
 |------|---------|
 | 0-3  | `q`, model index (0..15) |
-| 4    | state present; always 1 in real data (a record with bit 4 clear is rejected) |
+| 4    | flush (see below); 1 in every record observed in real data |
 | 5    | extended length: `len_hi` follows |
 | 6-7  | `r`, width reduction: the record's symbol width is `w' = w - r`, where `w` is the lane's base width |
 
@@ -48,7 +48,18 @@ Record size `total` (bytes after the length field, state included):
 * extended form (bit 5 = 1): `total = (len_lo | len_hi << 8) + 257`
   (257..65792).
 
-The first `nst = min(4, total)` record bytes are the initial rANS state,
+**Flush bit.** When bit 4 is set, the record ends with the state back at `L`
+and the next record of the lane starts from a fresh state: its first bytes are
+a new initial state. When bit 4 is clear, the record ends as soon as its bytes
+are exhausted while `x < L` (no zero restoration), and the next record has
+**no state bytes**: its bytes keep feeding the same state, under the next
+record's own `q` and width. This is the behaviour of the `flush_per_frag` bit
+in Microsoft's public `silicon-rans` sample decoder. Non-flushed records were
+never found in real chunks (all formats); the decoder supports them, but their
+interaction with the scheduler timing is not confirmed by data.
+
+When the record starts from a fresh state (first record of the lane, or the
+previous record was flushed), the first `nst = min(4, total)` record bytes are the initial rANS state,
 **big-endian**: `x` is the integer formed by these `nst` bytes, most significant first. The remaining
 `total - nst` bytes are the payload (the lane's **budget**).
 
@@ -132,6 +143,11 @@ values (all observed records decode), and the integer tables, not the
 lambdas, are what matters. Example, `(q, w') = (12, 5)`: per-symbol
 frequencies by bucket `53290, 9957, 1104, 14, 1, 1` (FIN = 1; total 65536).
 `q = 15` is saturated: every symbol but 0 has frequency 1.
+
+**Cross-check.** These generated tables are identical, for every `q` and every
+width 1 to 8, to the tables `base_table` / `freq_table` of Microsoft's public
+MIT-licensed `silicon-rans` sample (`mdu_minirans.v`); the test
+`verilog_ref::tests` checks all 128 of them (see `THIRD_PARTY_NOTICES.md`).
 
 The crate's test `model::tests::table_fingerprint` pins a hash of all
 16 x 8 tables, so that a platform with a different `exp`/`pow` would be
@@ -251,12 +267,17 @@ small levels.
 | format | status |
 |--------|--------|
 | BC1 | **solved**: entropy layer and block semantics reproduce real chunks exactly |
-| BC7 | not solved. Same record format, tables and 8-byte read cap; 16 lanes, base widths `4,4,8,8,8,8,8,7,7,5,6,8,8,8,8,8` (last one assumed), one symbol per lane per 8 bytes (two per BC7 block). With the BC1 scheduling rules decoding desynchronises after a few hundred rounds, typically when a lane restarts after a short `q = 0` record. Semantics not studied. |
-| BC5 | not solved. Tentatively 12 lanes (`3,4,8,8` then eight lanes of width 6). |
-| BC4, BC3, BC6H | not studied. |
+| BC7 | **entropy layer established**: 16 lanes, base widths `4,4,8,8,8,8,8,7,7,5,6,8,8,8,8,5` (lane 15 is 5 bits wide; reading it as 8 bits was the cause of the earlier desynchronisation), one symbol per lane per 8 bytes (two per BC7 block), same records, tables and scheduler as BC1. Every BC7 chunk of the corpus decodes exactly (about 5 100 chunks). Block semantics not implemented. |
+| BC6H | entropy layer established: 16 lanes `4,4,8,8,8,5,5,5,6,6,6,8,8,8,8,5`; all chunks of the corpus exact (about 270). Semantics not implemented. |
+| BC5 | entropy layer established: 12 lanes `4,4,8,8` then eight lanes of width 6, two units per block; all chunks exact (about 320). Semantics not implemented. |
+| BC4 | entropy layer established: 12 lanes `8,8,8,8` then eight of width 6, one unit per block; all chunks exact (about 80). |
+| BC3 | entropy layer established: 12 lanes `4,4,8,6,6,6,6,5,6,5,8,8`, two units per block; all chunks exact (about 35). |
 
-The entropy layer of this crate (`decode_lanes`, CLI `lanes --widths`) is
-generic over the lane layout to help further work.
+The entropy layer (`decode_lanes`, `CodecParams::for_codec`, CLI
+`lanes --codec`) covers all six formats; only BC1 has a block assembler. The
+lane layouts of BC3, BC4, BC5, BC6H and BC7 (including the 5-bit lane 15)
+were first suggested by public notes of independent researchers and were then
+verified on data with the strict acceptance criterion of section 3.
 
 ## 8. Table file
 
@@ -292,7 +313,10 @@ used. Public information used: Microsoft's public DirectStorage
 documentation (BCPack is an rANS entropy coder for BCn data that separates
 endpoints from indices), public discussions by compression developers
 (lossless coding on top of BCn blocks), and public notes from independent
-researchers (byte-wise rANS with 16-bit probabilities and `L = 2^24`).
+researchers (byte-wise rANS with 16-bit probabilities and `L = 2^24`; lane
+layouts of the formats other than BC1), and Microsoft's MIT-licensed
+`silicon-rans` sample decoder, published after the tables had been fitted,
+which confirmed the tables, the record header and the flush bit.
 
 Main steps:
 

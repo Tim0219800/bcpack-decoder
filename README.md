@@ -13,8 +13,7 @@ read scheduler. This project documents the format and decodes **BC1**.
 | format | status |
 |--------|--------|
 | BC1 | **supported**, bit-exact |
-| BC7, BC5 | entropy layer partly understood, not decodable yet |
-| BC4, BC3, BC6H | not studied |
+| BC7, BC6H, BC5, BC4, BC3 | entropy layer solved (`lanes --codec`, every chunk of the corpus exact); block reconstruction not implemented |
 
 ## Legal notice
 
@@ -152,6 +151,9 @@ More samples give better tables; exact `blocks` pairs are always preferable.
 MIT, see [LICENSE](LICENSE). The patent notice above still applies: the
 licence covers this code, not the BCPack method.
 
+The test-only file `src/verilog_ref.rs` contains tables from Microsoft's
+`silicon-rans` sample (MIT); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 ---
 
 ## Français
@@ -169,8 +171,7 @@ projet documente le format et décode le **BC1**.
 | format | état |
 |--------|------|
 | BC1 | **pris en charge**, exact au bit près |
-| BC7, BC5 | couche entropique en partie comprise, pas encore décodable |
-| BC4, BC3, BC6H | non étudiés |
+| BC7, BC6H, BC5, BC4, BC3 | couche entropique résolue (`lanes --codec`, tous les chunks du corpus exacts) ; reconstruction des blocs non implémentée |
 
 ### Mentions légales
 
@@ -319,3 +320,6 @@ exactes `blocks` sont toujours préférables.
 
 MIT, voir [LICENSE](LICENSE). La mention de brevet ci-dessus reste valable :
 la licence couvre ce code, pas la méthode BCPack.
+
+Le fichier de test `src/verilog_ref.rs` contient des tables de l'exemple
+`silicon-rans` de Microsoft (MIT) ; voir [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

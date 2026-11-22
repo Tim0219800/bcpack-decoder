@@ -6,9 +6,9 @@
 //! stream through a deterministic read scheduler.
 //!
 //! Status: **BC1 is fully supported**. The entropy layer
-//! ([`decode_lanes`]) is generic over the lane layout so that other formats
-//! can be added once their lanes are understood; BC3, BC4, BC5, BC6H and BC7
-//! are not solved.
+//! ([`decode_lanes`] with [`CodecParams::for_codec`]) also decodes BC3, BC4,
+//! BC5, BC6H and BC7 chunks into lane symbols; their block reconstruction is
+//! not implemented.
 //!
 //! BC1 needs two learned tables that are not shipped with the crate; they are
 //! loaded at runtime from a JSON file ([`Bc1Tables`]) that you can derive from
@@ -38,6 +38,8 @@ pub mod tables;
 mod roundtrip;
 #[cfg(test)]
 pub(crate) mod testenc;
+#[cfg(test)]
+mod verilog_ref;
 
 pub use bc1::{assemble_bc1, decode_bc1};
 pub use error::{Error, Result};

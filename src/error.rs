@@ -14,9 +14,6 @@ pub enum Error {
     OutSizeNotMultiple { out_size: usize, unit: usize },
     /// A lane asked for a byte after the end of the input.
     UnexpectedEof { lane: usize, offset: usize },
-    /// A record header without an initial state (mode bit 4 clear).
-    /// Such records were never observed in valid data; their semantics are unknown.
-    StatelessRecord { lane: usize, mode: u8 },
     /// A record selects a symbol width outside 1..=8.
     WidthOutOfRange { lane: usize, width: i32 },
     /// A lane state fell to zero, which a valid encoder cannot produce.
@@ -62,10 +59,6 @@ impl fmt::Display for Error {
             UnexpectedEof { lane, offset } => {
                 write!(f, "lane {lane} needs a byte past the end of the input (offset {offset})")
             }
-            StatelessRecord { lane, mode } => write!(
-                f,
-                "lane {lane}: record without initial state (mode byte 0x{mode:02x}) is not supported"
-            ),
             WidthOutOfRange { lane, width } => {
                 write!(f, "lane {lane}: symbol width {width} outside 1..=8")
             }

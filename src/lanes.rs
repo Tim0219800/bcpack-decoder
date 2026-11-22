@@ -1,7 +1,9 @@
 //! Entropy layer: interleaved rANS lanes and the byte scheduler.
 //!
-//! A BCPack chunk is a single byte stream shared by `K` lanes (12 for BC1).
-//! Each lane decodes one symbol per coding unit (one 8-byte BC1 block) and is
+//! A BCPack chunk is a single byte stream shared by `K` lanes (12 for BC1,
+//! BC3, BC4 and BC5; 16 for BC6H and BC7). Each lane decodes one symbol per
+//! coding unit (8 output bytes: one BC1/BC4 block, half a BC3/BC5/BC6H/BC7
+//! block) and is
 //! made of a chain of *records* (fragments). Bytes are not stored lane by
 //! lane: the decoder works in rounds, and in each round at most
 //! `max_reads_per_round` (8) lanes that want a byte receive the next byte of
@@ -38,6 +40,52 @@ impl CodecParams {
             lane_widths: vec![8, 8, 5, 6, 5, 5, 6, 5, 8, 8, 8, 8],
             unit_bytes: 8,
             max_reads_per_round: 8,
+        }
+    }
+
+    /// BC3: 12 lanes, two coding units (symbol tuples) per 16-byte block.
+    /// Base widths `4,4,8,6,6,6,6,5,6,5,8,8`. Entropy layer only: the block
+    /// semantics are not implemented by this crate.
+    pub fn bc3() -> Self {
+        Self::with_widths(vec![4, 4, 8, 6, 6, 6, 6, 5, 6, 5, 8, 8])
+    }
+
+    /// BC4: 12 lanes, one coding unit per 8-byte block. Base widths
+    /// `8,8,8,8` then eight lanes of width 6. Entropy layer only.
+    pub fn bc4() -> Self {
+        Self::with_widths(vec![8, 8, 8, 8, 6, 6, 6, 6, 6, 6, 6, 6])
+    }
+
+    /// BC5: 12 lanes, two coding units per 16-byte block. Base widths
+    /// `4,4,8,8` then eight lanes of width 6. Entropy layer only.
+    pub fn bc5() -> Self {
+        Self::with_widths(vec![4, 4, 8, 8, 6, 6, 6, 6, 6, 6, 6, 6])
+    }
+
+    /// BC6H: 16 lanes, two coding units per 16-byte block. Base widths
+    /// `4,4,8,8,8,5,5,5,6,6,6,8,8,8,8,5`. Entropy layer only.
+    pub fn bc6h() -> Self {
+        Self::with_widths(vec![4, 4, 8, 8, 8, 5, 5, 5, 6, 6, 6, 8, 8, 8, 8, 5])
+    }
+
+    /// BC7: 16 lanes, two coding units per 16-byte block. Base widths
+    /// `4,4,8,8,8,8,8,7,7,5,6,8,8,8,8,5` (lane 15 is 5 bits wide). Entropy
+    /// layer only.
+    pub fn bc7() -> Self {
+        Self::with_widths(vec![4, 4, 8, 8, 8, 8, 8, 7, 7, 5, 6, 8, 8, 8, 8, 5])
+    }
+
+    /// Lane layout for a codec name (`bc1`, `bc3`, `bc4`, `bc5`, `bc6h`,
+    /// `bc7`), case-insensitive.
+    pub fn for_codec(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "bc1" => Some(Self::bc1()),
+            "bc3" => Some(Self::bc3()),
+            "bc4" => Some(Self::bc4()),
+            "bc5" => Some(Self::bc5()),
+            "bc6h" => Some(Self::bc6h()),
+            "bc7" => Some(Self::bc7()),
+            _ => None,
         }
     }
 
@@ -121,22 +169,32 @@ enum Phase {
 pub struct RecordHeader {
     /// Model index (mode bits 0-3).
     pub q: u32,
+    /// Flush flag (mode bit 4): the record ends with the state back at `L`
+    /// and the next record of the lane starts from a fresh state. When clear,
+    /// the record ends as soon as its bytes are exhausted and the state is
+    /// below `L`, and the next record continues from that state.
+    pub flush: bool,
     /// Width reduction (mode bits 6-7).
     pub reduction: u32,
     /// Total record bytes, state included.
     pub total_bytes: u64,
-    /// Number of state bytes stored (1..=4; trailing zero bytes are trimmed).
+    /// Number of state bytes stored (1..=4; trailing zero bytes are trimmed),
+    /// or 0 when the record continues the state of a non-flushed record.
     pub state_bytes: usize,
 }
 
-/// Parses a header prefix. Returns `Ok(None)` while more bytes are needed.
+/// Parses a header prefix. Returns `None` while more bytes are needed.
 ///
-/// Layout: `mode [len_lo] [len_hi if mode bit 5] state[0..min(4, total)]`.
-/// * mode bits 0-3: `q`; bit 4: state present (always 1); bit 5: extended
-///   length; bits 6-7: width reduction `r` (`w' = w - r`).
+/// Layout: `mode len_lo [len_hi if mode bit 5] state[0..min(4, total)]`.
+/// * mode bits 0-3: `q`; bit 4: flush; bit 5: extended length; bits 6-7:
+///   width reduction `r` (`w' = w - r`).
 /// * short length: `total = len + 1` (1..=256);
 ///   extended: `total = (lo | hi << 8) + 257`.
-pub fn parse_header(hdr: &[u8]) -> Option<RecordHeader> {
+/// * `with_state`: the record starts from a fresh state (first record of the
+///   lane, or the previous record had its flush bit set), so its first
+///   `min(4, total)` bytes are the initial state. Otherwise the record has no
+///   state bytes and continues the state left by the previous record.
+pub fn parse_header(hdr: &[u8], with_state: bool) -> Option<RecordHeader> {
     let m = *hdr.first()? as u32;
     let ext = ((m >> 5) & 1) as usize;
     let nlen = 1 + ext;
@@ -149,16 +207,13 @@ pub fn parse_header(hdr: &[u8]) -> Option<RecordHeader> {
         hdr[1] as u64
     };
     let total = ln + 1;
-    let nst = if m & 0x10 != 0 {
-        total.min(4) as usize
-    } else {
-        0
-    };
+    let nst = if with_state { total.min(4) as usize } else { 0 };
     if hdr.len() < 1 + nlen + nst {
         return None;
     }
     Some(RecordHeader {
         q: m & 15,
+        flush: m & 0x10 != 0,
         reduction: m >> 6,
         total_bytes: total,
         state_bytes: nst,
@@ -177,6 +232,11 @@ struct Lane<'m> {
     budget: u64,
     x: u64,
     table: Option<&'m ModelTable>,
+    /// Flush bit of the current record.
+    flush: bool,
+    /// The previous record was not flushed: the next header has no state
+    /// bytes and the state `x` carries over.
+    carry: bool,
     /// Symbols decoded ahead of the block synchroniser (0 or 1).
     pending: u32,
     /// Header completed in this round: no decoding until the next round.
@@ -187,15 +247,9 @@ struct Lane<'m> {
 impl<'m> Lane<'m> {
     /// Feeds one header byte; returns `true` when the header is complete.
     fn feed_header(&mut self, byte: u8, models: &'m Models) -> Result<bool> {
-        if self.hdr_len == 0 && byte & 0x10 == 0 {
-            return Err(Error::StatelessRecord {
-                lane: self.index,
-                mode: byte,
-            });
-        }
         self.hdr[self.hdr_len] = byte;
         self.hdr_len += 1;
-        let h = match parse_header(&self.hdr[..self.hdr_len]) {
+        let h = match parse_header(&self.hdr[..self.hdr_len], !self.carry) {
             None => return Ok(false),
             Some(h) => h,
         };
@@ -206,10 +260,14 @@ impl<'m> Lane<'m> {
                 width: w,
             });
         }
-        let start = self.hdr_len - h.state_bytes;
-        self.x = self.hdr[start..self.hdr_len]
-            .iter()
-            .fold(0u64, |x, &b| (x << 8) | b as u64);
+        if !self.carry {
+            let start = self.hdr_len - h.state_bytes;
+            self.x = self.hdr[start..self.hdr_len]
+                .iter()
+                .fold(0u64, |x, &b| (x << 8) | b as u64);
+        }
+        self.carry = false;
+        self.flush = h.flush;
         self.budget = h.total_bytes - h.state_bytes as u64;
         self.table = Some(models.get(h.q, w as u32));
         self.phase = Phase::Run;
@@ -239,8 +297,34 @@ impl<'m> Lane<'m> {
         } else {
             self.phase = Phase::Header;
             self.hdr_len = 0;
+            self.carry = !self.flush;
         }
         Ok(())
+    }
+
+    /// Closes a non-flushed record whose bytes are exhausted while the state
+    /// is below `L`: the next record continues from the current state.
+    fn finish_carry(&mut self, nsym: usize) {
+        if self.syms.len() >= nsym {
+            self.phase = Phase::Done;
+        } else {
+            self.phase = Phase::Header;
+            self.hdr_len = 0;
+            self.carry = true;
+        }
+    }
+
+    /// Record exhausted with the state below `L`: either shift in the trimmed
+    /// zero bytes (flushed record) or hand over to the next record (returns
+    /// `true`).
+    fn exhausted(&mut self, nsym: usize) -> Result<bool> {
+        if self.flush {
+            self.zero_fill()?;
+            Ok(false)
+        } else {
+            self.finish_carry(nsym);
+            Ok(true)
+        }
     }
 
     fn zero_fill(&mut self) -> Result<()> {
@@ -293,6 +377,8 @@ pub fn run_scheduler<S: ByteSource>(
             budget: 0,
             x: 0,
             table: None,
+            flush: true,
+            carry: false,
             pending: 0,
             fresh: false,
             syms: Vec::with_capacity(nsym),
@@ -362,7 +448,11 @@ pub fn run_scheduler<S: ByteSource>(
                         l.x = (l.x << 8) | b as u64;
                         continue;
                     }
-                    None if l.budget == 0 => l.zero_fill()?,
+                    None if l.budget == 0 => {
+                        if l.exhausted(nsym)? {
+                            continue;
+                        }
+                    }
                     None => continue,
                 }
             }
@@ -396,8 +486,8 @@ pub fn run_scheduler<S: ByteSource>(
             }
             // Trailing zero bytes of a record are not stored: once the record
             // is exhausted they are shifted in for free.
-            if l.budget == 0 && l.buf.is_none() && l.x < L {
-                l.zero_fill()?;
+            if l.budget == 0 && l.buf.is_none() && l.x < L && l.exhausted(nsym)? {
+                continue;
             }
             if l.at_end() {
                 l.finish(nsym)?;
@@ -469,33 +559,67 @@ mod tests {
     #[test]
     fn header_parsing() {
         // short length: 0x05 + 1 = 6 bytes, 4 of them state
-        let h = parse_header(&[0x12, 0x05, 1, 2, 3, 4]).unwrap();
+        let h = parse_header(&[0x12, 0x05, 1, 2, 3, 4], true).unwrap();
         assert_eq!(
             h,
             RecordHeader {
                 q: 2,
+                flush: true,
                 reduction: 0,
                 total_bytes: 6,
                 state_bytes: 4
             }
         );
-        assert!(parse_header(&[0x12, 0x05, 1, 2, 3]).is_none());
+        assert!(parse_header(&[0x12, 0x05, 1, 2, 3], true).is_none());
         // extended length: (0x0b | 0x00 << 8) + 257 = 268
-        let h = parse_header(&[0xbc, 0x0b, 0x00, 1, 2, 3, 4]).unwrap();
+        let h = parse_header(&[0xbc, 0x0b, 0x00, 1, 2, 3, 4], true).unwrap();
         assert_eq!(
             h,
             RecordHeader {
                 q: 12,
+                flush: true,
                 reduction: 2,
                 total_bytes: 268,
                 state_bytes: 4
             }
         );
         // 1-byte record: the state is a single byte
-        let h = parse_header(&[0x50, 0x00, 0x01]).unwrap();
+        let h = parse_header(&[0x50, 0x00, 0x01], true).unwrap();
         assert_eq!(h.total_bytes, 1);
         assert_eq!(h.state_bytes, 1);
         assert_eq!(h.reduction, 1);
+    }
+
+    #[test]
+    fn header_without_state() {
+        // flush bit clear does not change the layout of this header...
+        let h = parse_header(&[0x02, 0x05, 1, 2, 3, 4], true).unwrap();
+        assert!(!h.flush);
+        assert_eq!(h.state_bytes, 4);
+        // ...but a record that continues a non-flushed one has no state bytes
+        let h = parse_header(&[0x12, 0x05], false).unwrap();
+        assert!(h.flush);
+        assert_eq!((h.total_bytes, h.state_bytes), (6, 0));
+        let h = parse_header(&[0x22, 0x0b, 0x00], false).unwrap();
+        assert_eq!((h.total_bytes, h.state_bytes), (268, 0));
+    }
+
+    #[test]
+    fn codec_layouts() {
+        for (name, n) in [
+            ("bc1", 12),
+            ("BC3", 12),
+            ("bc4", 12),
+            ("bc5", 12),
+            ("bc6h", 16),
+            ("bc7", 16),
+        ] {
+            let p = CodecParams::for_codec(name).unwrap();
+            assert_eq!(p.lane_widths.len(), n);
+            assert!(p.validate().is_ok());
+        }
+        assert_eq!(CodecParams::bc7().lane_widths[15], 5);
+        assert!(CodecParams::for_codec("bc2").is_none());
     }
 
     #[test]
@@ -525,11 +649,8 @@ mod tests {
             decode_lanes(&[], &p, 8),
             Err(Error::UnexpectedEof { lane: 0, .. })
         ));
-        // mode byte without the state bit
-        assert!(matches!(
-            decode_lanes(&[0x00; 64], &p, 8),
-            Err(Error::StatelessRecord { lane: 0, .. })
-        ));
+        // zero bytes: non-flushed records that never yield a symbol
+        assert!(decode_lanes(&[0x00; 64], &p, 8).is_err());
         assert!(matches!(
             decode_lanes(&[], &CodecParams::with_widths(vec![]), 8),
             Err(Error::InvalidParams(_))

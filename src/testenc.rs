@@ -108,6 +108,52 @@ impl ByteSource for Queues {
     }
 }
 
+/// Interleaves pre-encoded per-lane byte strings (records already built by
+/// the caller) and checks that every lane re-decodes to `want`.
+pub fn interleave_raw(
+    params: &CodecParams,
+    lanes: Vec<Vec<u8>>,
+    want: &[Vec<u8>],
+    nsym: usize,
+) -> Result<Vec<u8>> {
+    let mut src = Queues {
+        q: lanes.into_iter().map(VecDeque::from).collect(),
+        out: Vec::new(),
+    };
+    let syms = run_scheduler(&mut src, params, nsym)?;
+    for lane in 0..want.len() {
+        assert_eq!(syms[lane], want[lane], "lane {lane} re-decoded differently");
+        assert!(src.q[lane].is_empty(), "lane {lane} has unread bytes");
+    }
+    Ok(src.out)
+}
+
+/// Header bytes of a record of `total` bytes.
+pub fn header(q: u32, reduction: u32, flush: bool, total: usize) -> Vec<u8> {
+    let mode = ((reduction << 6) | if flush { 0x10 } else { 0 } | q) as u8;
+    if total <= 256 {
+        vec![mode, (total - 1) as u8]
+    } else {
+        let stored = total - 257;
+        vec![mode | 0x20, stored as u8, (stored >> 8) as u8]
+    }
+}
+
+/// Encodes `syms` as one rANS body, then cuts it after `cut` bytes into a
+/// non-flushed record followed by a flushed record that continues its state.
+/// Both records use the same model, so the pair must decode exactly like the
+/// single record.
+pub fn split_record(width: u32, q: u32, syms: &[u8], cut: usize) -> Vec<u8> {
+    let table = models().unwrap().get(q, width);
+    let body = encode_body(table, syms);
+    assert!(cut >= 1 && cut < body.len());
+    let mut out = header(q, 0, false, cut);
+    out.extend(&body[..cut]);
+    out.extend(header(q, 0, true, body.len() - cut));
+    out.extend(&body[cut..]);
+    out
+}
+
 /// Builds the interleaved stream for the given records of every lane.
 /// Every lane's records must hold exactly `nsym` symbols in total.
 pub fn interleave(params: &CodecParams, records: &[Vec<Record>], nsym: usize) -> Result<Vec<u8>> {

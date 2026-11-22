@@ -247,3 +247,63 @@ fn corrupted_streams_never_panic() {
         stream.len() * 3
     );
 }
+
+#[test]
+fn non_flushed_record_continues_state() {
+    // Mode bit 4 clear: the record ends when its bytes are exhausted and the
+    // next record (which has no state bytes) keeps feeding the same state.
+    let mut rng = Rng::new(21);
+    let mut tried = 0;
+    for _ in 0..300 {
+        let w = 1 + rng.below(8) as u32;
+        let q = 1 + rng.below(14) as u32;
+        let n = 1 + rng.below(120) as usize;
+        let t = models().unwrap().get(q, w);
+        let syms: Vec<u8> = (0..n).map(|_| rng.sample_from(t)).collect();
+        let len = encode_body(t, &syms).len();
+        if len < 2 {
+            continue;
+        }
+        let cut = 1 + rng.below(len as u64 - 1) as usize;
+        let stream = split_record(w, q, &syms, cut);
+        let p = CodecParams::with_widths(vec![w]);
+        assert_eq!(decode_lanes(&stream, &p, 8 * n).unwrap(), vec![syms]);
+        tried += 1;
+    }
+    assert!(tried > 200);
+}
+
+#[test]
+fn non_flushed_records_in_bc7_layout() {
+    // Same split inside a 16-lane stream, so that carried states go through
+    // the read cap and the stall rule.
+    let p = CodecParams::bc7();
+    let mut rng = Rng::new(22);
+    for _ in 0..40 {
+        let nsym = 2 + rng.below(150) as usize;
+        let mut raw = Vec::new();
+        let mut want = Vec::new();
+        for &w in &p.lane_widths {
+            let q = 1 + rng.below(14) as u32;
+            let t = models().unwrap().get(q, w);
+            let syms: Vec<u8> = (0..nsym).map(|_| rng.sample_from(t)).collect();
+            let len = encode_body(t, &syms).len();
+            let bytes = if len >= 2 && rng.below(2) == 0 {
+                split_record(w, q, &syms, 1 + rng.below(len as u64 - 1) as usize)
+            } else {
+                encode_record(
+                    w,
+                    &Record {
+                        q,
+                        reduction: 0,
+                        syms: syms.clone(),
+                    },
+                )
+            };
+            raw.push(bytes);
+            want.push(syms);
+        }
+        let stream = interleave_raw(&p, raw, &want, nsym).unwrap();
+        assert_eq!(decode_lanes(&stream, &p, 8 * nsym).unwrap(), want);
+    }
+}

@@ -14,10 +14,10 @@ USAGE:
   bcpack-decoder decode --codec bc1 --tables TABLES.json --size N IN.bin OUT.bin
       Decode one BC1 chunk into N bytes of standard BC1 blocks (chunk memory order).
 
-  bcpack-decoder lanes (--codec bc1 | --widths W0,W1,...) --size N IN.bin OUT.bin
+  bcpack-decoder lanes (--codec C | --widths W0,W1,...) --size N IN.bin OUT.bin
       Decode the entropy layer only and write the lane symbols, lane after lane
-      (N / 8 bytes per lane). Needs no table file; --widths allows experiments
-      with other lane layouts.
+      (N / 8 bytes per lane). C is bc1, bc3, bc4, bc5, bc6h or bc7. Needs no
+      table file; --widths allows experiments with other lane layouts.
 
   bcpack-decoder learn-tables --list LIST.txt --ref blocks|quads [--tables IN.json]
                               [--corpus CORPUS.txt] --out OUT.json
@@ -126,7 +126,11 @@ fn run(argv: &[String]) -> Result<(), Error> {
         }
         "lanes" => {
             let params = match (a.get("codec"), a.get("widths")) {
-                (Some("bc1"), None) => CodecParams::bc1(),
+                (Some(c), None) => CodecParams::for_codec(c).ok_or_else(|| {
+                    Error::InvalidParams(format!(
+                        "unknown codec {c:?} (bc1, bc3, bc4, bc5, bc6h or bc7)"
+                    ))
+                })?,
                 (None, Some(w)) => {
                     let widths = w
                         .split(',')
@@ -137,7 +141,7 @@ fn run(argv: &[String]) -> Result<(), Error> {
                 }
                 _ => {
                     return Err(Error::InvalidParams(
-                        "give either --codec bc1 or --widths".into(),
+                        "give either --codec or --widths".into(),
                     ))
                 }
             };

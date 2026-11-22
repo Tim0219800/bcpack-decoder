@@ -1,10 +1,10 @@
 [package]
 name = "bcpack-decoder"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.77"
 license = "MIT"
-description = "Clean-room decoder for Xbox Series DirectStorage BCPack texture streams (BC1)"
+description = "Clean-room decoder for Xbox Series DirectStorage BCPack texture streams (BC1; entropy layer for all BCn formats)"
 readme = "README.md"
 keywords = ["bcpack", "rans", "bc1", "texture", "directstorage"]
 categories = ["compression", "multimedia::images"]
