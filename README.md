@@ -18,10 +18,15 @@ read scheduler. This project documents the format and decodes **BC1**.
 
 ## Legal notice
 
-* BCPack is covered by Microsoft patent(s), for example **US 11,234,023**.
-  This project is a **non-commercial interoperability and research
-  implementation**. If you plan any other use, check the patent situation in
-  your jurisdiction first.
+* The entropy layer that BCPack uses is described in Microsoft's patent
+  **US 11,234,023 B2**, "Features of range asymmetric number system encoding
+  and decoding" (filed 2019, granted 2022), with family members including
+  **EP 3 991 303 B1** (Europe), WO 2020/263438, CN 114073009 B and
+  KR 10-2922298 B1. It covers rANS coding that switches, fragment by fragment,
+  between static probability models signalled in a header, with adjustable
+  symbol width and selective state flushing. This project is a
+  **non-commercial interoperability and research implementation**. If you
+  plan any other use, check the patent situation in your jurisdiction first.
 * The format was reconstructed from data only (statistics on texture chunks).
   No Microsoft or game binary was disassembled or decompiled, and no
   confidential documentation was used. See [docs/SPEC.md](docs/SPEC.md),
@@ -169,8 +174,14 @@ projet documente le format et décode le **BC1**.
 
 ### Mentions légales
 
-* BCPack est couvert par un ou des brevets Microsoft, par exemple
-  **US 11,234,023**. Ce projet est une **implémentation non commerciale,
+* La couche entropique utilisée par BCPack est décrite dans le brevet
+  Microsoft **US 11,234,023 B2**, « Features of range asymmetric number system
+  encoding and decoding » (déposé en 2019, délivré en 2022), dont la famille
+  comprend notamment **EP 3 991 303 B1** (Europe), WO 2020/263438,
+  CN 114073009 B et KR 10-2922298 B1. Il couvre un codage rANS qui change,
+  fragment par fragment, de modèle de probabilités statique signalé dans un
+  en-tête, avec une largeur de symbole réglable et une remise à zéro sélective
+  de l'état. Ce projet est une **implémentation non commerciale,
   d'interopérabilité et de recherche**. Pour tout autre usage, vérifiez
   d'abord la situation des brevets dans votre pays.
 * Le format a été reconstitué uniquement à partir des données (statistiques
